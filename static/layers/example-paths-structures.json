@@ -1,0 +1,33 @@
+{
+  "features": [
+    {
+      "name": "Example path",
+      "kind": "path",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [380, 1280],
+          [950, 1060],
+          [1380, 1120],
+          [1900, 820]
+        ]
+      }
+    },
+    {
+      "name": "Example structure",
+      "kind": "structure",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [1120, 610],
+            [1560, 610],
+            [1560, 920],
+            [1120, 920],
+            [1120, 610]
+          ]
+        ]
+      }
+    }
+  ]
+}
