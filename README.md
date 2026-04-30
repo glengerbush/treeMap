@@ -5,7 +5,7 @@ I wanted to keep track of the trees I've planted in my yard and nature destroyed
 - Upload an aerial photo of your yard from the layer panel when you want a base map.
 - Then mark paths, landmarks, and tree locations, along with details about each.
 
-<video src="{github cdn link incoming}" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/324fd65e-f205-4a52-9c5b-d7d48c6b3092" controls width="100%"></video>
 
 
 ## Run Locally
