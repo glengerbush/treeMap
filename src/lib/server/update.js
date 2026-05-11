@@ -79,15 +79,6 @@ export function isLockedByLiveProcess() {
   catch { return false; }
 }
 
-export function lastLogEntries(limit = 20) {
-  const p = paths();
-  if (!existsSync(p.log)) return [];
-  const lines = readFileSync(p.log, 'utf8').trim().split('\n').filter(Boolean);
-  return lines.slice(-limit).map((line) => {
-    try { return JSON.parse(line); } catch { return { raw: line }; }
-  });
-}
-
 export function updateScriptPath() {
   return paths().updateScript;
 }

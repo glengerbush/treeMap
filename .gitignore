@@ -3,9 +3,9 @@ node_modules
 build
 .vite
 
-# Runtime data (databases, uploaded maps, snapshots, pid/lock files, audit log)
-data/*
-!data/.gitkeep
+# Runtime data (databases, uploaded maps, snapshots, pid/lock files, audit log).
+# The data/ dir itself is created at install time, not tracked in the repo.
+data/
 
 # Deploy layout (server-side only)
 releases/

@@ -24,6 +24,5 @@ export function POST() {
     env: { ...process.env, TREEMAP_APP_DIR: root }
   });
   child.unref();
-
-  return json({ started: true, pid: child.pid }, { status: 202 });
+  return json({ started: true }, { status: 202 });
 }
