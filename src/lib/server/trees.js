@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, rowToTree } from './db.js';
 
-const STATUSES = new Set(['Planted', 'Planned', 'Watching', 'Removed']);
+const STATUSES = new Set(['Planted', 'Planned', 'Flagged']);
 
 function cleanText(value, max = 600) {
   if (typeof value !== 'string') return '';
