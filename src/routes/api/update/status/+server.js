@@ -1,10 +1,11 @@
 import { json } from '@sveltejs/kit';
-import { readCurrent, readStatus, isLockedByLiveProcess } from '$lib/server/update.js';
+import { readCurrent, readStatus, isLockedByLiveProcess, listIncomingBundles } from '$lib/server/update.js';
 
 export function GET() {
   return json({
     current: readCurrent(),
     running: isLockedByLiveProcess(),
-    status: readStatus()
+    status: readStatus(),
+    offlineBundles: listIncomingBundles()
   });
 }

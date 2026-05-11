@@ -16,7 +16,8 @@
 
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync,
-  unlinkSync, symlinkSync, readlinkSync, renameSync, openSync, closeSync
+  unlinkSync, symlinkSync, readlinkSync, renameSync, openSync, closeSync,
+  readdirSync
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
@@ -44,6 +45,7 @@ const STATUS = join(DATA, 'update-status.json');
 const LOG = join(DATA, 'update-log.jsonl');
 const PIDFILE = join(DATA, 'server.pid');
 const MAINTENANCE = join(DATA, 'maintenance.flag');
+const INCOMING = join(DATA, 'incoming');
 
 function writeStatus(phase, extra = {}) {
   const status = { phase, updatedAt: new Date().toISOString(), pid: process.pid, ...extra };
@@ -147,6 +149,19 @@ function atomicSymlink(target, linkPath) {
   renameSync(tmp, linkPath);
 }
 
+function resolveUpdateSource() {
+  if (!existsSync(INCOMING)) return { kind: 'origin' };
+  const bundles = readdirSync(INCOMING)
+    .filter((f) => f.endsWith('.bundle'))
+    .sort()
+    .map((f) => join(INCOMING, f));
+  if (bundles.length === 0) return { kind: 'origin' };
+  if (bundles.length > 1) {
+    throw new Error(`multiple bundles in ${INCOMING}: ${bundles.map((b) => b.split('/').pop()).join(', ')}`);
+  }
+  return { kind: 'bundle', path: bundles[0] };
+}
+
 async function main() {
   mkdirSync(DATA, { recursive: true });
 
@@ -162,8 +177,14 @@ async function main() {
   const fromVersion = readVersion(CURRENT);
 
   try {
-    writeStatus('fetching', { fromSha, fromVersion });
-    runCapture('git', ['-C', CURRENT, 'fetch', 'origin']);
+    const source = resolveUpdateSource();
+    writeStatus('fetching', { fromSha, fromVersion, source: source.kind });
+    if (source.kind === 'bundle') {
+      runCapture('git', ['bundle', 'verify', source.path]);
+      runCapture('git', ['-C', CURRENT, 'fetch', source.path, 'main:refs/remotes/origin/main']);
+    } else {
+      runCapture('git', ['-C', CURRENT, 'fetch', 'origin']);
+    }
     const toSha = runCapture('git', ['-C', CURRENT, 'rev-parse', 'origin/main']);
 
     if (toSha === fromSha) {
@@ -211,6 +232,11 @@ async function main() {
       atomicSymlink(oldTarget, PREVIOUS);
       atomicSymlink(`releases/${shortTo}`, CURRENT);
       swapped = true;
+      // Bundle has served its purpose. Consume it so the next update
+      // doesn't redundantly try to apply the same one.
+      if (source.kind === 'bundle') {
+        try { unlinkSync(source.path); } catch { /* best effort */ }
+      }
     } catch (e) {
       // Pre-swap failure (snapshot/migration). Restore data; old code is
       // still pointed at by `current` so removing the flag brings it back.

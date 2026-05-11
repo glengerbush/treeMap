@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readlinkSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readlinkSync, readdirSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 
@@ -12,11 +12,20 @@ function paths() {
     root,
     current: join(root, 'current'),
     data: join(root, 'data'),
+    incoming: join(root, 'data', 'incoming'),
     status: join(root, 'data', 'update-status.json'),
     lock: join(root, 'data', 'update.lock'),
     log: join(root, 'data', 'update-log.jsonl'),
     updateScript: join(root, 'current', 'scripts', 'update.mjs')
   };
+}
+
+export function listIncomingBundles() {
+  const p = paths();
+  if (!existsSync(p.incoming)) return [];
+  return readdirSync(p.incoming)
+    .filter((f) => f.endsWith('.bundle'))
+    .sort();
 }
 
 function tryGit(cwd, argv) {
