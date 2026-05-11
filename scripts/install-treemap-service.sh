@@ -2,8 +2,10 @@
 set -Eeuo pipefail
 
 SERVICE_NAME="${TREEMAP_SERVICE_NAME:-treemap}"
-APP_DIR="${TREEMAP_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_USER="${TREEMAP_USER:-${SUDO_USER:-$(id -un)}}"
+APP_USER_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
+APP_DIR="${TREEMAP_APP_DIR:-${APP_USER_HOME:-$HOME}/treemap}"
 APP_PORT="${TREEMAP_PORT:-3000}"
 INSTALL_PROXY="${TREEMAP_INSTALL_PROXY:-auto}"
 PUBLIC_PORT="${TREEMAP_PUBLIC_PORT:-80}"
@@ -14,6 +16,8 @@ OPEN_FIREWALL="${TREEMAP_OPEN_FIREWALL:-auto}"
 DISABLE_DEFAULT_SITE="${TREEMAP_DISABLE_DEFAULT_SITE:-auto}"
 NODE_MAJOR_REQUIRED=24
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+FETCH_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}-fetch.service"
+FETCH_TIMER_FILE="/etc/systemd/system/${SERVICE_NAME}-fetch.timer"
 NGINX_SITE_FILE="/etc/nginx/sites-available/${SERVICE_NAME}"
 NGINX_SITE_LINK="/etc/nginx/sites-enabled/${SERVICE_NAME}"
 
@@ -136,43 +140,80 @@ validate_settings() {
   if proxy_enabled && [[ "$APP_PORT" == "$PUBLIC_PORT" ]]; then
     die "TREEMAP_PORT and TREEMAP_PUBLIC_PORT must be different when nginx proxying is enabled."
   fi
-  [[ -d "$APP_DIR" ]] || die "App directory does not exist: $APP_DIR"
-  [[ -f "$APP_DIR/package.json" ]] || die "Run this from the TreeMap app directory, or set TREEMAP_APP_DIR."
+  [[ -f "$SOURCE_DIR/package.json" ]] || die "Source checkout missing package.json: $SOURCE_DIR"
   id "$APP_USER" >/dev/null 2>&1 || die "User does not exist: $APP_USER"
   need_cmd systemctl
+  need_cmd git
 }
 
 prepare_app_directory() {
   local app_group
   app_group="$(id -gn "$APP_USER")"
 
-  log "Preparing app directory for $APP_USER"
+  log "Preparing deployment root at $APP_DIR for $APP_USER"
+
+  if (( EUID == 0 )); then
+    mkdir -p "$APP_DIR"
+    chown "$APP_USER:$app_group" "$APP_DIR"
+  else
+    run_as_app_user mkdir -p "$APP_DIR"
+  fi
 
   if ! run_as_app_user test -w "$APP_DIR"; then
-    if (( EUID == 0 )); then
-      chown -R "$APP_USER:$app_group" "$APP_DIR"
+    die "$APP_USER cannot write to $APP_DIR. Fix ownership or rerun with sudo."
+  fi
+
+  run_as_app_user mkdir -p \
+    "$APP_DIR/releases" \
+    "$APP_DIR/data" \
+    "$APP_DIR/data/maps" \
+    "$APP_DIR/data/incoming"
+}
+
+clone_initial_release() {
+  local sha release_dir
+  sha="$(git -C "$SOURCE_DIR" rev-parse --short=12 HEAD 2>/dev/null || true)"
+  [[ -n "$sha" ]] || die "Source checkout $SOURCE_DIR is not a git repository."
+  release_dir="$APP_DIR/releases/$sha"
+
+  if [[ -d "$release_dir" ]]; then
+    log "Release $sha already present, skipping clone"
+  else
+    log "Cloning source into release $sha"
+    run_as_app_user git clone --local --no-hardlinks "$SOURCE_DIR" "$release_dir"
+
+    # Point the new clone's origin at the source's public remote, if any.
+    # Otherwise `git fetch origin` from the deployment would target SOURCE_DIR,
+    # which may not exist on a production host.
+    local src_origin
+    src_origin="$(git -C "$SOURCE_DIR" remote get-url origin 2>/dev/null || true)"
+    if [[ -n "$src_origin" && "$src_origin" != "$SOURCE_DIR" ]]; then
+      log "Setting release origin to $src_origin"
+      run_as_app_user git -C "$release_dir" remote set-url origin "$src_origin"
     else
-      die "$APP_USER cannot write to $APP_DIR. Fix ownership or rerun with sudo."
+      log "Source has no public origin; release will fetch from $SOURCE_DIR"
     fi
   fi
 
-  run_as_app_user mkdir -p "$APP_DIR/data/maps"
+  log "Linking current -> releases/$sha"
+  run_as_app_user ln -sfn "releases/$sha" "$APP_DIR/current"
 }
 
 install_dependencies_and_build() {
-  local npm_bin
+  local npm_bin release_dir
   need_cmd npm
   npm_bin="$(command -v npm)"
+  release_dir="$(readlink -f "$APP_DIR/current")"
 
-  log "Installing npm dependencies"
-  if [[ -f "$APP_DIR/package-lock.json" ]]; then
-    (cd "$APP_DIR" && run_as_app_user "$npm_bin" ci)
+  log "Installing npm dependencies in $release_dir"
+  if [[ -f "$release_dir/package-lock.json" ]]; then
+    (cd "$release_dir" && run_as_app_user "$npm_bin" ci)
   else
-    (cd "$APP_DIR" && run_as_app_user "$npm_bin" install)
+    (cd "$release_dir" && run_as_app_user "$npm_bin" install)
   fi
 
   log "Building production app"
-  (cd "$APP_DIR" && run_as_app_user "$npm_bin" run build)
+  (cd "$release_dir" && run_as_app_user "$npm_bin" run build)
 }
 
 write_service() {
@@ -197,7 +238,7 @@ Environment=HOST=$(app_host)
 Environment=PORT=${APP_PORT}
 Environment=NODE_ENV=production
 Environment=BODY_SIZE_LIMIT=${BODY_SIZE_LIMIT}
-ExecStart=${node_bin} build
+ExecStart=${node_bin} current/build
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
@@ -210,6 +251,46 @@ SERVICE
 
   run_sudo install -m 0644 "$tmp_service" "$SERVICE_FILE"
   rm -f "$tmp_service"
+}
+
+write_fetch_timer() {
+  local app_group tmp_unit
+  app_group="$(id -gn "$APP_USER")"
+
+  log "Writing daily fetch timer: $FETCH_TIMER_FILE"
+  tmp_unit="$(mktemp)"
+  cat > "$tmp_unit" <<SERVICE
+[Unit]
+Description=TreeMap origin fetch (refreshes update-available indicator)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=${APP_USER}
+Group=${app_group}
+Environment=TREEMAP_APP_DIR=${APP_DIR}
+ExecStart=/usr/bin/env bash ${APP_DIR}/current/scripts/fetch-updates.sh
+SERVICE
+  run_sudo install -m 0644 "$tmp_unit" "$FETCH_SERVICE_FILE"
+  rm -f "$tmp_unit"
+
+  tmp_unit="$(mktemp)"
+  cat > "$tmp_unit" <<TIMER
+[Unit]
+Description=Run TreeMap origin fetch daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15min
+Persistent=true
+Unit=${SERVICE_NAME}-fetch.service
+
+[Install]
+WantedBy=timers.target
+TIMER
+  run_sudo install -m 0644 "$tmp_unit" "$FETCH_TIMER_FILE"
+  rm -f "$tmp_unit"
 }
 
 install_and_configure_nginx() {
@@ -283,6 +364,9 @@ enable_service() {
   run_sudo systemctl daemon-reload
   run_sudo systemctl enable "$SERVICE_NAME"
   run_sudo systemctl restart "$SERVICE_NAME"
+
+  log "Enabling daily fetch timer ${SERVICE_NAME}-fetch.timer"
+  run_sudo systemctl enable --now "${SERVICE_NAME}-fetch.timer"
 }
 
 print_summary() {
@@ -290,7 +374,10 @@ print_summary() {
   lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 
   printf '\nTreeMap is installed as %s.\n' "$SERVICE_NAME"
-  printf 'Local service status: systemctl status %s\n' "$SERVICE_NAME"
+  printf 'Deployment root:       %s\n' "$APP_DIR"
+  printf 'Active release:        %s -> %s\n' "$APP_DIR/current" "$(readlink "$APP_DIR/current")"
+  printf 'Shared data:           %s/data\n' "$APP_DIR"
+  printf 'Local service status:  systemctl status %s\n' "$SERVICE_NAME"
   printf 'Service logs:          journalctl -u %s -f\n' "$SERVICE_NAME"
 
   if [[ -n "$lan_ip" ]]; then
@@ -316,8 +403,10 @@ main() {
   validate_settings
   ensure_node
   prepare_app_directory
+  clone_initial_release
   install_dependencies_and_build
   write_service
+  write_fetch_timer
   enable_service
   install_and_configure_nginx
   open_firewall_if_needed

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Tag the just-created commit with vX.Y.Z from package.json, if no such tag exists.
+set -euo pipefail
+
+# Skip during merge/rebase/cherry-pick replay.
+git_dir=$(git rev-parse --git-dir)
+for marker in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+  if [[ -e "$git_dir/$marker" ]] || [[ -d "$git_dir/rebase-merge" ]] || [[ -d "$git_dir/rebase-apply" ]]; then
+    exit 0
+  fi
+done
+
+version=$(git show HEAD:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || true)
+[[ -n "${version:-}" ]] || exit 0
+
+tag="v${version}"
+if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+  exit 0
+fi
+
+git tag -a "$tag" -m "Release $tag"
+echo "post-commit: tagged $tag"
