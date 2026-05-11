@@ -81,6 +81,33 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+const HEALTH_HOST = process.env.HOST && process.env.HOST !== '0.0.0.0' ? process.env.HOST : '127.0.0.1';
+const HEALTH_PORT = parseInt(process.env.PORT || '3000', 10);
+const HEALTH_PATH = '/api/update/status';
+const HEALTH_TIMEOUT_MS = 60000;
+const HEALTH_INTERVAL_MS = 1000;
+const HEALTH_REQ_TIMEOUT_MS = 2000;
+
+async function probeHealth() {
+  try {
+    const res = await fetch(`http://${HEALTH_HOST}:${HEALTH_PORT}${HEALTH_PATH}`, {
+      signal: AbortSignal.timeout(HEALTH_REQ_TIMEOUT_MS)
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForHealthy(timeoutMs = HEALTH_TIMEOUT_MS) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await probeHealth()) return true;
+    await new Promise((r) => setTimeout(r, HEALTH_INTERVAL_MS));
+  }
+  return false;
+}
+
 function killServerAndWait({ timeoutMs = 30000, pollMs = 200 } = {}) {
   if (!existsSync(PIDFILE)) return;
   let pid;
@@ -166,6 +193,8 @@ async function main() {
     killServerAndWait();
 
     let snapshotPath = null;
+    let oldTarget = null;
+    let swapped = false;
     try {
       writeStatus('snapshotting', { fromSha, toSha, fromVersion, toVersion });
       snapshotPath = snapshotData({ dataDir: DATA, label: `pre-${toVersion}` });
@@ -178,29 +207,65 @@ async function main() {
       });
 
       writeStatus('swapping', { fromSha, toSha, fromVersion, toVersion, migrated: migrated.ran });
-      const oldTarget = readlinkSync(CURRENT);
+      oldTarget = readlinkSync(CURRENT);
       atomicSymlink(oldTarget, PREVIOUS);
       atomicSymlink(`releases/${shortTo}`, CURRENT);
-
-      pruneSnapshots({ dataDir: DATA, keep: 3 });
+      swapped = true;
     } catch (e) {
+      // Pre-swap failure (snapshot/migration). Restore data; old code is
+      // still pointed at by `current` so removing the flag brings it back.
       if (snapshotPath) {
-        try {
-          restoreSnapshot({ dataDir: DATA, snapshotPath });
-        } catch (re) {
+        try { restoreSnapshot({ dataDir: DATA, snapshotPath }); }
+        catch (re) {
           appendLog({
-            at: new Date().toISOString(),
-            outcome: 'restore-failed',
-            snapshot: snapshotPath,
-            error: re.message || String(re)
+            at: new Date().toISOString(), outcome: 'restore-failed',
+            snapshot: snapshotPath, error: re.message || String(re)
           });
         }
       }
-      throw e;
-    } finally {
       removeMaintenanceFlag();
+      throw e;
     }
 
+    // Swap done. Let systemd respawn the new code, then probe.
+    writeStatus('restarting', { fromSha, toSha, fromVersion, toVersion });
+    removeMaintenanceFlag();
+
+    writeStatus('verifying', { fromSha, toSha, fromVersion, toVersion });
+    const healthy = await waitForHealthy();
+
+    if (!healthy) {
+      // Rollback. Block respawns, take down the unhealthy new server,
+      // restore data, swap symlinks back to the old release.
+      writeStatus('rolling-back', { fromSha, toSha, fromVersion, toVersion });
+      createMaintenanceFlag();
+      try {
+        killServerAndWait();
+        try { restoreSnapshot({ dataDir: DATA, snapshotPath }); }
+        catch (re) {
+          appendLog({
+            at: new Date().toISOString(), outcome: 'restore-failed',
+            snapshot: snapshotPath, error: re.message || String(re)
+          });
+        }
+        if (swapped && oldTarget) {
+          atomicSymlink(oldTarget, CURRENT);
+          try { unlinkSync(PREVIOUS); } catch { /* fine */ }
+        }
+      } finally {
+        removeMaintenanceFlag();
+      }
+      // Best-effort: confirm the old code comes back up.
+      const recovered = await waitForHealthy(30000);
+      writeStatus('rolled-back', { fromSha, toSha, fromVersion, toVersion, recovered });
+      appendLog({
+        at: startedAt, outcome: 'rolled-back',
+        from: fromSha, to: toSha, fromVersion, toVersion, recovered
+      });
+      return;
+    }
+
+    pruneSnapshots({ dataDir: DATA, keep: 3 });
     writeStatus('done', { fromSha, toSha, fromVersion, toVersion });
     appendLog({ at: startedAt, outcome: 'success', from: fromSha, to: toSha, fromVersion, toVersion });
   } catch (e) {
