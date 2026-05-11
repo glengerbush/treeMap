@@ -5,9 +5,10 @@ set -euo pipefail
 # Skip during amend — those rewrite an existing commit; the version
 # should stay whatever HEAD already has, not bump again. Git doesn't
 # expose --amend through env vars (GIT_REFLOG_ACTION is set after
-# this hook runs), so detect it by inspecting the parent process.
-parent_args="$(ps -p $PPID -o args= 2>/dev/null || true)"
-if [[ "$parent_args" == *"--amend"* ]]; then
+# this hook runs), so detect it by reading the parent process argv.
+# Use /proc/<pid>/cmdline (NUL-separated argv) and match --amend as a
+# whole arg so commit messages mentioning "--amend" don't false-trip.
+if [[ -r "/proc/$PPID/cmdline" ]] && tr '\0' '\n' < "/proc/$PPID/cmdline" | grep -qx -- "--amend"; then
   exit 0
 fi
 
