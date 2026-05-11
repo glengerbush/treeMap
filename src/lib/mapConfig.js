@@ -14,7 +14,6 @@ export const mapConfig = {
   statuses: [
     { value: 'Planted', color: '#2f7d45' },
     { value: 'Planned', color: '#b7791f' },
-    { value: 'Watching', color: '#2f6f95' },
-    { value: 'Removed', color: '#667085' }
+    { value: 'Flagged', color: '#c0392b' }
   ]
 };

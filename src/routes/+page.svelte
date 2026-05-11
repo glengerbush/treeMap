@@ -102,7 +102,7 @@
   );
   let editToolsExpanded = $derived(editToolsOpen || layerTool === 'edit' || layerTool === 'delete');
   let plantedCount = $derived(
-    trees.filter((tree) => ['planted', 'watching'].includes(String(tree.status).toLowerCase()))
+    trees.filter((tree) => ['planted', 'flagged'].includes(String(tree.status).toLowerCase()))
       .length
   );
   let treeFormDirty = $derived.by(() => {
@@ -1280,7 +1280,7 @@
       weight: isSelected ? 4 : 2,
       opacity: 0.95,
       fillColor: color,
-      fillOpacity: tree.status === 'Removed' ? 0.14 : 0.3
+      fillOpacity: 0.3
     });
 
     circle.bindTooltip(treeTitle(tree), { direction: 'top', sticky: true });
