@@ -180,8 +180,17 @@ async function main() {
     const source = resolveUpdateSource();
     writeStatus('fetching', { fromSha, fromVersion, source: source.kind });
     if (source.kind === 'bundle') {
-      runCapture('git', ['bundle', 'verify', source.path]);
-      runCapture('git', ['-C', CURRENT, 'fetch', source.path, 'main:refs/remotes/origin/main']);
+      runCapture('git', ['-C', CURRENT, 'bundle', 'verify', source.path]);
+      // Bundles can be created from any ref name (main, origin/main, ...).
+      // Find which ref in the bundle represents main and fetch from that.
+      const heads = runCapture('git', ['-C', CURRENT, 'bundle', 'list-heads', source.path]);
+      const refs = heads.split('\n').map((line) => line.trim().split(/\s+/)[1]).filter(Boolean);
+      const mainRef =
+        refs.find((r) => r === 'refs/heads/main') ||
+        refs.find((r) => r.endsWith('/main')) ||
+        refs[0];
+      if (!mainRef) throw new Error(`bundle ${source.path} has no refs`);
+      runCapture('git', ['-C', CURRENT, 'fetch', source.path, `${mainRef}:refs/remotes/origin/main`]);
     } else {
       runCapture('git', ['-C', CURRENT, 'fetch', 'origin']);
     }
