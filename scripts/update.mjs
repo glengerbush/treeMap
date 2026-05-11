@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 // scripts/update.mjs — Apply a TreeMap update.
 //
-// Phase 2: online updates from origin/main with atomic symlink swap.
-// No data migrations and no auto-rollback yet (added in later phases).
+// Phase 3: online updates from origin/main with data migrations,
+// snapshot+restore on failure, and a maintenance flag that holds the
+// server down while migrations run. No auto-rollback on health failure
+// yet (Phase 4 adds that).
 //
 // Usage:
 //   node scripts/update.mjs [--app-dir <APP_DIR>]
 // Env:
 //   TREEMAP_APP_DIR  Same as --app-dir.
 //
-// The script is meant to be spawned detached by the running server. It
-// writes JSON snapshots to data/update-status.json so the web UI can
-// poll across the restart that ends the update.
+// Status snapshots land at data/update-status.json so the UI can poll
+// across the restart that ends the update.
 
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync,
@@ -20,6 +21,9 @@ import {
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import process from 'node:process';
+
+import { runMigrations } from './migrate.mjs';
+import { snapshotData, restoreSnapshot, pruneSnapshots } from './snapshot.mjs';
 
 function parseArgs(argv) {
   const out = {};
@@ -39,6 +43,7 @@ const LOCK = join(DATA, 'update.lock');
 const STATUS = join(DATA, 'update-status.json');
 const LOG = join(DATA, 'update-log.jsonl');
 const PIDFILE = join(DATA, 'server.pid');
+const MAINTENANCE = join(DATA, 'maintenance.flag');
 
 function writeStatus(phase, extra = {}) {
   const status = { phase, updatedAt: new Date().toISOString(), pid: process.pid, ...extra };
@@ -58,7 +63,6 @@ function acquireLock() {
   } catch (e) {
     if (e.code !== 'EEXIST') throw e;
   }
-  // Existing lock — check whether the holder is still alive.
   let holder;
   try { holder = parseInt(readFileSync(LOCK, 'utf8').trim(), 10); } catch { holder = NaN; }
   if (Number.isFinite(holder)) {
@@ -69,6 +73,28 @@ function acquireLock() {
 }
 
 function releaseLock() { try { unlinkSync(LOCK); } catch { /* best effort */ } }
+
+function createMaintenanceFlag() { writeFileSync(MAINTENANCE, `${process.pid}\n`); }
+function removeMaintenanceFlag() { try { unlinkSync(MAINTENANCE); } catch { /* fine */ } }
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function killServerAndWait({ timeoutMs = 30000, pollMs = 200 } = {}) {
+  if (!existsSync(PIDFILE)) return;
+  let pid;
+  try { pid = parseInt(readFileSync(PIDFILE, 'utf8').trim(), 10); } catch { pid = NaN; }
+  if (Number.isFinite(pid)) {
+    try { process.kill(pid, 'SIGTERM'); }
+    catch (err) { if (err.code !== 'ESRCH') throw err; }
+  }
+  const start = Date.now();
+  while (existsSync(PIDFILE) && Date.now() - start < timeoutMs) {
+    sleepSync(pollMs);
+  }
+  if (existsSync(PIDFILE)) throw new Error('server did not stop within timeout');
+}
 
 function runCapture(cmd, argv, opts = {}) {
   const r = spawnSync(cmd, argv, { encoding: 'utf8', ...opts });
@@ -98,9 +124,9 @@ async function main() {
   mkdirSync(DATA, { recursive: true });
 
   acquireLock();
-  process.on('exit', releaseLock);
+  process.on('exit', () => { releaseLock(); removeMaintenanceFlag(); });
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
-    process.on(sig, () => { releaseLock(); process.exit(1); });
+    process.on(sig, () => { releaseLock(); removeMaintenanceFlag(); process.exit(1); });
   }
 
   const startedAt = new Date().toISOString();
@@ -133,21 +159,46 @@ async function main() {
     writeStatus('building', { fromSha, toSha, target: shortTo });
     runInherit('npm', ['ci'], { cwd: newRelease });
     runInherit('npm', ['run', 'build'], { cwd: newRelease });
-
-    writeStatus('swapping', { fromSha, toSha });
-    const oldTarget = readlinkSync(CURRENT);
-    atomicSymlink(oldTarget, PREVIOUS);
-    atomicSymlink(`releases/${shortTo}`, CURRENT);
-
     const toVersion = readVersion(newRelease);
 
-    writeStatus('restarting', { fromSha, toSha, fromVersion, toVersion });
-    if (existsSync(PIDFILE)) {
-      const serverPid = parseInt(readFileSync(PIDFILE, 'utf8').trim(), 10);
-      if (Number.isFinite(serverPid)) {
-        try { process.kill(serverPid, 'SIGTERM'); }
-        catch (err) { if (err.code !== 'ESRCH') throw err; }
+    writeStatus('stopping', { fromSha, toSha, fromVersion, toVersion });
+    createMaintenanceFlag();
+    killServerAndWait();
+
+    let snapshotPath = null;
+    try {
+      writeStatus('snapshotting', { fromSha, toSha, fromVersion, toVersion });
+      snapshotPath = snapshotData({ dataDir: DATA, label: `pre-${toVersion}` });
+
+      writeStatus('migrating', { fromSha, toSha, fromVersion, toVersion });
+      const migrated = await runMigrations({
+        releaseDir: newRelease,
+        dataDir: DATA,
+        log: (m) => console.error(m)
+      });
+
+      writeStatus('swapping', { fromSha, toSha, fromVersion, toVersion, migrated: migrated.ran });
+      const oldTarget = readlinkSync(CURRENT);
+      atomicSymlink(oldTarget, PREVIOUS);
+      atomicSymlink(`releases/${shortTo}`, CURRENT);
+
+      pruneSnapshots({ dataDir: DATA, keep: 3 });
+    } catch (e) {
+      if (snapshotPath) {
+        try {
+          restoreSnapshot({ dataDir: DATA, snapshotPath });
+        } catch (re) {
+          appendLog({
+            at: new Date().toISOString(),
+            outcome: 'restore-failed',
+            snapshot: snapshotPath,
+            error: re.message || String(re)
+          });
+        }
       }
+      throw e;
+    } finally {
+      removeMaintenanceFlag();
     }
 
     writeStatus('done', { fromSha, toSha, fromVersion, toVersion });

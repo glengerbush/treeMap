@@ -1,7 +1,15 @@
-import { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const pidFile = join(process.cwd(), 'data', 'server.pid');
+const dataDir = join(process.cwd(), 'data');
+const pidFile = join(dataDir, 'server.pid');
+const maintenanceFlag = join(dataDir, 'maintenance.flag');
+
+if (existsSync(maintenanceFlag)) {
+  console.error('[hooks.server] maintenance flag present, exiting without serving');
+  process.exit(0);
+}
+
 let pidWritten = false;
 
 function writePidFile() {
