@@ -16,6 +16,8 @@ OPEN_FIREWALL="${TREEMAP_OPEN_FIREWALL:-auto}"
 DISABLE_DEFAULT_SITE="${TREEMAP_DISABLE_DEFAULT_SITE:-auto}"
 NODE_MAJOR_REQUIRED=24
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+FETCH_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}-fetch.service"
+FETCH_TIMER_FILE="/etc/systemd/system/${SERVICE_NAME}-fetch.timer"
 NGINX_SITE_FILE="/etc/nginx/sites-available/${SERVICE_NAME}"
 NGINX_SITE_LINK="/etc/nginx/sites-enabled/${SERVICE_NAME}"
 
@@ -252,6 +254,46 @@ SERVICE
   rm -f "$tmp_service"
 }
 
+write_fetch_timer() {
+  local app_group tmp_unit
+  app_group="$(id -gn "$APP_USER")"
+
+  log "Writing daily fetch timer: $FETCH_TIMER_FILE"
+  tmp_unit="$(mktemp)"
+  cat > "$tmp_unit" <<SERVICE
+[Unit]
+Description=TreeMap origin fetch (refreshes update-available indicator)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=${APP_USER}
+Group=${app_group}
+Environment=TREEMAP_APP_DIR=${APP_DIR}
+ExecStart=/usr/bin/env bash ${APP_DIR}/current/scripts/fetch-updates.sh
+SERVICE
+  run_sudo install -m 0644 "$tmp_unit" "$FETCH_SERVICE_FILE"
+  rm -f "$tmp_unit"
+
+  tmp_unit="$(mktemp)"
+  cat > "$tmp_unit" <<TIMER
+[Unit]
+Description=Run TreeMap origin fetch daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15min
+Persistent=true
+Unit=${SERVICE_NAME}-fetch.service
+
+[Install]
+WantedBy=timers.target
+TIMER
+  run_sudo install -m 0644 "$tmp_unit" "$FETCH_TIMER_FILE"
+  rm -f "$tmp_unit"
+}
+
 install_and_configure_nginx() {
   proxy_enabled || return
 
@@ -323,6 +365,9 @@ enable_service() {
   run_sudo systemctl daemon-reload
   run_sudo systemctl enable "$SERVICE_NAME"
   run_sudo systemctl restart "$SERVICE_NAME"
+
+  log "Enabling daily fetch timer ${SERVICE_NAME}-fetch.timer"
+  run_sudo systemctl enable --now "${SERVICE_NAME}-fetch.timer"
 }
 
 print_summary() {
@@ -362,6 +407,7 @@ main() {
   clone_initial_release
   install_dependencies_and_build
   write_service
+  write_fetch_timer
   enable_service
   install_and_configure_nginx
   open_firewall_if_needed
