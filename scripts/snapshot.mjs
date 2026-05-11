@@ -5,19 +5,25 @@
 // snapshots/ from itself and benefit from --delete on restore.
 
 import { existsSync, mkdirSync, readdirSync, statSync, rmSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+
+import { runCapture } from './_run.mjs';
 
 function timestamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 }
 
-function run(cmd, args) {
-  const r = spawnSync(cmd, args, { encoding: 'utf8' });
-  if (r.status !== 0) {
-    throw new Error(`${cmd} ${args.join(' ')} failed (${r.status}): ${(r.stderr || r.stdout || '').trim()}`);
-  }
-}
+// Files that are per-process state, not part of the user data we're
+// snapshotting. Used as rsync excludes for both snapshot and restore so
+// neither operation touches them.
+const RSYNC_EXCLUDES = [
+  '--exclude=snapshots/',
+  '--exclude=update.lock',
+  '--exclude=update-status.json',
+  '--exclude=update.log',
+  '--exclude=server.pid',
+  '--exclude=maintenance.flag'
+];
 
 export function snapshotsDir(dataDir) {
   return join(dataDir, 'snapshots');
@@ -30,15 +36,9 @@ export function snapshotData({ dataDir, label }) {
   const target = join(snapshotsDir(dataDir), id);
 
   // rsync trailing slash on source = copy CONTENTS of dataDir.
-  // Exclude snapshots/ so we don't recursively copy ourselves.
-  run('rsync', [
+  runCapture('rsync', [
     '-a',
-    '--exclude=snapshots/',
-    '--exclude=update.lock',
-    '--exclude=update-status.json',
-    '--exclude=update.log',
-    '--exclude=server.pid',
-    '--exclude=maintenance.flag',
+    ...RSYNC_EXCLUDES,
     `${dataDir.replace(/\/?$/, '/')}`,
     `${target}/`
   ]);
@@ -47,18 +47,12 @@ export function snapshotData({ dataDir, label }) {
 
 export function restoreSnapshot({ dataDir, snapshotPath }) {
   if (!existsSync(snapshotPath)) throw new Error(`snapshot missing: ${snapshotPath}`);
-  // Delete extraneous files in dataDir that aren't in the snapshot — but
-  // never touch the snapshots dir itself (rsync --delete-excluded would
-  // wipe it; --exclude alone keeps it intact).
-  run('rsync', [
+  // --delete removes files in dataDir that aren't in the snapshot.
+  // --exclude (not --delete-excluded) keeps the snapshots dir intact.
+  runCapture('rsync', [
     '-a',
     '--delete',
-    '--exclude=snapshots/',
-    '--exclude=update.lock',
-    '--exclude=update-status.json',
-    '--exclude=update.log',
-    '--exclude=server.pid',
-    '--exclude=maintenance.flag',
+    ...RSYNC_EXCLUDES,
     `${snapshotPath.replace(/\/?$/, '/')}`,
     `${dataDir.replace(/\/?$/, '/')}`
   ]);

@@ -2,8 +2,9 @@
 // scripts/migrate.mjs — Run pending data migrations from a release.
 //
 // Usage (CLI):
-//   node scripts/migrate.mjs --release <dir> --data-dir <dir>
-// Used programmatically by scripts/update.mjs.
+//   node scripts/migrate.mjs --app-dir <APP_DIR>
+//   # Equivalent to --release <APP_DIR>/current --data-dir <APP_DIR>/data.
+// Used programmatically by scripts/update.mjs via runMigrations().
 //
 // Migration files live at <release>/migrations/<id>.mjs and export:
 //   export const id = '20260511-001-example';
@@ -79,21 +80,21 @@ export async function runMigrations({ releaseDir, dataDir, log = () => {} }) {
 function parseArgs(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--release' && argv[i + 1]) out.release = argv[++i];
-    else if (argv[i] === '--data-dir' && argv[i + 1]) out.dataDir = argv[++i];
+    if (argv[i] === '--app-dir' && argv[i + 1]) out.appDir = argv[++i];
   }
   return out;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.release || !args.dataDir) {
-    console.error('usage: migrate.mjs --release <dir> --data-dir <dir>');
+  const appDir = args.appDir || process.env.TREEMAP_APP_DIR;
+  if (!appDir) {
+    console.error('usage: migrate.mjs --app-dir <APP_DIR>');
     process.exit(2);
   }
   const result = await runMigrations({
-    releaseDir: resolve(args.release),
-    dataDir: resolve(args.dataDir),
+    releaseDir: resolve(appDir, 'current'),
+    dataDir: resolve(appDir, 'data'),
     log: (m) => console.error(m)
   });
   console.log(JSON.stringify(result));

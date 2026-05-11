@@ -11,7 +11,7 @@ set -u
 APP_DIR="${TREEMAP_APP_DIR:-${HOME}/treemap}"
 CURRENT="${APP_DIR}/current"
 
-if [[ ! -d "$CURRENT/.git" && ! -f "$CURRENT/.git" ]]; then
+if ! git -C "$CURRENT" rev-parse --git-dir >/dev/null 2>&1; then
   echo "fetch-updates: no git repo at $CURRENT" >&2
   exit 0
 fi

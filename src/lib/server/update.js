@@ -40,8 +40,11 @@ export function readCurrent() {
   try {
     version = JSON.parse(readFileSync(join(p.current, 'package.json'), 'utf8')).version;
   } catch { /* fall through */ }
-  const sha = tryGit(p.current, ['rev-parse', 'HEAD']);
-  const target = tryGit(p.current, ['rev-parse', 'origin/main']);
+
+  // One rev-parse for both shas instead of two separate git invocations.
+  const revs = tryGit(p.current, ['rev-parse', 'HEAD', 'origin/main']);
+  const [sha = null, target = null] = revs ? revs.split('\n') : [];
+
   let targetVersion = null;
   if (target && target !== sha) {
     const out = tryGit(p.current, ['show', `origin/main:package.json`]);

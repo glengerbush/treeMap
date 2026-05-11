@@ -2,6 +2,15 @@
 # Auto-bump PATCH in package.json when the committer didn't touch the version.
 set -euo pipefail
 
+# Skip during amend — those rewrite an existing commit; the version
+# should stay whatever HEAD already has, not bump again. Git doesn't
+# expose --amend through env vars (GIT_REFLOG_ACTION is set after
+# this hook runs), so detect it by inspecting the parent process.
+parent_args="$(ps -p $PPID -o args= 2>/dev/null || true)"
+if [[ "$parent_args" == *"--amend"* ]]; then
+  exit 0
+fi
+
 # Skip during merge/rebase/cherry-pick — those replay existing commits.
 git_dir=$(git rev-parse --git-dir)
 for marker in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do

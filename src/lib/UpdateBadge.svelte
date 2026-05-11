@@ -1,6 +1,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
 
+  const TERMINAL_PHASES = ['done', 'noop', 'failed', 'rolled-back'];
+
   let state = $state({
     current: null,
     running: false,
@@ -8,7 +10,7 @@
     offlineBundles: [],
     error: null,
     triggered: false,
-    finished: false,
+    finishedPhase: null,
     showHelp: false
   });
 
@@ -27,12 +29,11 @@
       state.error = null;
 
       const phase = data.status?.phase;
-      const finished = phase === 'done' || phase === 'noop' || phase === 'failed';
-      if (state.triggered && finished && !data.running) {
-        state.finished = true;
+      if (state.triggered && !data.running && TERMINAL_PHASES.includes(phase)) {
+        state.finishedPhase = phase;
         fastPoll = false;
       }
-      if (data.running || (state.triggered && !state.finished)) {
+      if (data.running || (state.triggered && !state.finishedPhase)) {
         fastPoll = true;
       }
     } catch (e) {
@@ -51,7 +52,7 @@
 
   async function triggerUpdate() {
     state.triggered = true;
-    state.finished = false;
+    state.finishedPhase = null;
     fastPoll = true;
     try {
       const res = await fetch('/api/update', { method: 'POST' });
@@ -75,7 +76,12 @@
   let hasOfflineBundle = $derived(state.offlineBundles.length > 0);
 
   let label = $derived.by(() => {
-    if (state.finished) return 'Update installed';
+    switch (state.finishedPhase) {
+      case 'done': return `Updated to v${state.current?.version ?? ''}`;
+      case 'noop': return 'Already up to date';
+      case 'failed': return 'Update failed';
+      case 'rolled-back': return 'Rolled back to previous version';
+    }
     if (state.running || state.triggered) {
       const phase = state.status?.phase || 'starting';
       return `Updating: ${phase}`;
@@ -93,13 +99,28 @@
     (hasOfflineBundle || !!state.current?.updateAvailable) &&
     !state.running && !state.triggered
   );
+
+  let canReload = $derived(state.finishedPhase === 'done');
+  let canDismiss = $derived(
+    state.finishedPhase === 'noop' ||
+    state.finishedPhase === 'failed' ||
+    state.finishedPhase === 'rolled-back'
+  );
+
+  function dismiss() {
+    state.triggered = false;
+    state.finishedPhase = null;
+    state.error = null;
+  }
 </script>
 
 {#if state.current || state.error}
   <div class="update-badge" class:active={state.running || state.triggered}>
     <span class="label">{label}</span>
-    {#if state.finished}
+    {#if canReload}
       <button type="button" onclick={reload}>Reload</button>
+    {:else if canDismiss}
+      <button type="button" onclick={dismiss}>Dismiss</button>
     {:else if canUpdate}
       <button type="button" onclick={triggerUpdate}>Update</button>
     {/if}

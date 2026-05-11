@@ -19,10 +19,10 @@ import {
   unlinkSync, symlinkSync, readlinkSync, renameSync, openSync, closeSync,
   readdirSync
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import process from 'node:process';
 
+import { runCapture, runInherit } from './_run.mjs';
 import { runMigrations } from './migrate.mjs';
 import { snapshotData, restoreSnapshot, pruneSnapshots } from './snapshot.mjs';
 
@@ -48,7 +48,7 @@ const MAINTENANCE = join(DATA, 'maintenance.flag');
 const INCOMING = join(DATA, 'incoming');
 
 function writeStatus(phase, extra = {}) {
-  const status = { phase, updatedAt: new Date().toISOString(), pid: process.pid, ...extra };
+  const status = { phase, updatedAt: new Date().toISOString(), ...extra };
   writeFileSync(STATUS, JSON.stringify(status, null, 2) + '\n');
 }
 
@@ -123,19 +123,6 @@ function killServerAndWait({ timeoutMs = 30000, pollMs = 200 } = {}) {
     sleepSync(pollMs);
   }
   if (existsSync(PIDFILE)) throw new Error('server did not stop within timeout');
-}
-
-function runCapture(cmd, argv, opts = {}) {
-  const r = spawnSync(cmd, argv, { encoding: 'utf8', ...opts });
-  if (r.status !== 0) {
-    throw new Error(`${cmd} ${argv.join(' ')} failed (${r.status}): ${(r.stderr || r.stdout || '').trim()}`);
-  }
-  return (r.stdout || '').trim();
-}
-
-function runInherit(cmd, argv, opts = {}) {
-  const r = spawnSync(cmd, argv, { stdio: 'inherit', ...opts });
-  if (r.status !== 0) throw new Error(`${cmd} ${argv.join(' ')} failed (${r.status})`);
 }
 
 function readVersion(releaseDir) {
