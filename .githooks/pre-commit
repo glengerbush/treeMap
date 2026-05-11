@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Auto-bump PATCH in package.json when the committer didn't touch the version.
+set -euo pipefail
+
+# Skip during merge/rebase/cherry-pick — those replay existing commits.
+git_dir=$(git rev-parse --git-dir)
+for marker in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+  if [[ -e "$git_dir/$marker" ]] || [[ -d "$git_dir/rebase-merge" ]] || [[ -d "$git_dir/rebase-apply" ]]; then
+    exit 0
+  fi
+done
+
+repo_root=$(git rev-parse --show-toplevel)
+pkg="$repo_root/package.json"
+[[ -f "$pkg" ]] || exit 0
+
+# Version that will be committed (staged content, falling back to working tree).
+staged_version=$(git show :package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || true)
+if [[ -z "${staged_version:-}" ]]; then
+  staged_version=$(node -p "require('$pkg').version")
+fi
+
+# Previous version (empty for the initial commit).
+head_version=$(git show HEAD:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || true)
+
+# User changed the version manually — respect their choice, no auto-bump.
+if [[ -n "${head_version:-}" ]] && [[ "$staged_version" != "$head_version" ]]; then
+  exit 0
+fi
+
+IFS='.' read -r major minor patch <<<"$staged_version"
+if [[ -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" ]]; then
+  echo "pre-commit: package.json version '$staged_version' is not semver MAJOR.MINOR.PATCH" >&2
+  exit 1
+fi
+new_version="${major}.${minor}.$((patch + 1))"
+
+node -e "
+  const fs = require('fs');
+  const p = '$pkg';
+  const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+  j.version = '$new_version';
+  fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+"
+git add -- "$pkg"
+echo "pre-commit: bumped version $staged_version -> $new_version"

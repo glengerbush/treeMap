@@ -1,7 +1,7 @@
 {
   "name": "tree-map",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node build",
-    "check": "svelte-kit sync && svelte-check --threshold warning"
+    "check": "svelte-kit sync && svelte-check --threshold warning",
+    "prepare": "bash scripts/install-hooks.sh"
   },
   "engines": {
     "node": ">=24"
