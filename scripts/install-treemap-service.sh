@@ -163,9 +163,6 @@ prepare_app_directory() {
     die "$APP_USER cannot write to $APP_DIR. Fix ownership or rerun with sudo."
   fi
 
-  # snapshots/ is created on demand by the snapshot helper; maps/ holds
-  # uploaded satellite imagery; incoming/ is a discoverable drop zone
-  # for offline update bundles.
   run_as_app_user mkdir -p \
     "$APP_DIR/releases" \
     "$APP_DIR/data" \
