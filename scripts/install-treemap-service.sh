@@ -180,6 +180,18 @@ clone_initial_release() {
   else
     log "Cloning source into release $sha"
     run_as_app_user git clone --local --no-hardlinks "$SOURCE_DIR" "$release_dir"
+
+    # Point the new clone's origin at the source's public remote, if any.
+    # Otherwise `git fetch origin` from the deployment would target SOURCE_DIR,
+    # which may not exist on a production host.
+    local src_origin
+    src_origin="$(git -C "$SOURCE_DIR" remote get-url origin 2>/dev/null || true)"
+    if [[ -n "$src_origin" && "$src_origin" != "$SOURCE_DIR" ]]; then
+      log "Setting release origin to $src_origin"
+      run_as_app_user git -C "$release_dir" remote set-url origin "$src_origin"
+    else
+      log "Source has no public origin; release will fetch from $SOURCE_DIR"
+    fi
   fi
 
   log "Linking current -> releases/$sha"
