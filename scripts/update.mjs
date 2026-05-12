@@ -19,8 +19,16 @@ import {
   unlinkSync, symlinkSync, readlinkSync, renameSync, openSync, closeSync,
   readdirSync
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import process from 'node:process';
+
+// systemd services run with a minimal PATH (typically /usr/bin:/bin).
+// When node lives elsewhere (nvm, /usr/local/bin, an asdf shim), the
+// `npm` wrapper script exits 127 because its `#!/usr/bin/env node`
+// can't find node. Prepend the running node's bin dir to PATH for any
+// subprocess we spawn, so `npm` resolves the same node that's running us.
+const NPM_PATH = `${dirname(process.execPath)}:${process.env.PATH || ''}`;
+const NPM_ENV = { ...process.env, PATH: NPM_PATH };
 
 import { runCapture, runInherit } from './_run.mjs';
 import { runMigrations } from './migrate.mjs';
@@ -201,8 +209,8 @@ async function main() {
     }
 
     writeStatus('building', { fromSha, toSha, target: shortTo });
-    runInherit('npm', ['ci'], { cwd: newRelease });
-    runInherit('npm', ['run', 'build'], { cwd: newRelease });
+    runInherit('npm', ['ci'], { cwd: newRelease, env: NPM_ENV });
+    runInherit('npm', ['run', 'build'], { cwd: newRelease, env: NPM_ENV });
     const toVersion = readVersion(newRelease);
 
     writeStatus('stopping', { fromSha, toSha, fromVersion, toVersion });
