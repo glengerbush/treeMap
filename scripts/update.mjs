@@ -209,7 +209,10 @@ async function main() {
     }
 
     writeStatus('building', { fromSha, toSha, target: shortTo });
-    runInherit('npm', ['ci'], { cwd: newRelease, env: NPM_ENV });
+    // --include=dev: the systemd unit sets NODE_ENV=production, which
+    // npm ci would otherwise treat as a signal to skip devDependencies.
+    // SvelteKit's build needs vite + @sveltejs/kit + svelte from devDeps.
+    runInherit('npm', ['ci', '--include=dev'], { cwd: newRelease, env: NPM_ENV });
     runInherit('npm', ['run', 'build'], { cwd: newRelease, env: NPM_ENV });
     const toVersion = readVersion(newRelease);
 
