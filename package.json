@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node build",
-    "check": "svelte-kit sync && svelte-check --threshold warning"
+    "check": "svelte-kit sync && svelte-check --threshold warning",
+    "prepare": "svelte-kit sync || echo ''"
   },
   "engines": {
     "node": ">=24"

@@ -770,6 +770,7 @@
     map.on('mousemove', handlePointerMove);
     map.on('pm:create', handleLayerCreated);
     map.on('pm:remove', handleLayerRemoved);
+    map.on('zoomend', renderTrees);
 
     await loadVectorLayer();
   }
@@ -1273,11 +1274,12 @@
   function addTreeCircle(tree, isDraft) {
     const isSelected = isDraft || tree.id === selectedId;
     const color = getTreeColor(tree.status);
+    const outerWeight = isSelected ? 4 : 2;
     const circle = L.circle([tree.y, tree.x], {
       radius: tree.radius,
       pmIgnore: true,
       color,
-      weight: isSelected ? 4 : 2,
+      weight: outerWeight,
       opacity: 0.95,
       fillColor: color,
       fillOpacity: tree.status === 'Removed' ? 0.14 : 0.3
@@ -1297,6 +1299,22 @@
       if (!isDraft) editTree(tree.id);
     });
     circle.addTo(treeLayer);
+
+    // Thin white highlight ring inside the colored border, for legibility over
+    // green imagery. CRS.Simple: 1 map unit == 2^zoom CSS pixels.
+    const pxPerUnit = Math.pow(2, map.getZoom());
+    const innerRadius = tree.radius - (outerWeight / 2 + 1) / pxPerUnit;
+    if (innerRadius > 0) {
+      L.circle([tree.y, tree.x], {
+        radius: innerRadius,
+        pmIgnore: true,
+        interactive: false,
+        color: '#ffffff',
+        weight: 1,
+        opacity: 0.9,
+        fill: false
+      }).addTo(treeLayer);
+    }
   }
 
   function moveTreeToLatLng(latlng) {
