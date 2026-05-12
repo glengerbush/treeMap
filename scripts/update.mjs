@@ -206,6 +206,12 @@ async function main() {
       runCapture('git', ['-C', newRelease, 'checkout', toSha]);
       const origin = runCapture('git', ['-C', CURRENT, 'remote', 'get-url', 'origin']);
       runCapture('git', ['-C', newRelease, 'remote', 'set-url', 'origin', origin]);
+      // `git clone /local/path` seeds origin/<branch> from the source's
+      // local branches, not its remote-tracking refs — so origin/main here
+      // is whatever main was when the release dir was first set up. Point
+      // it at the SHA that actually triggered this update so readCurrent()
+      // doesn't see a stale target after the swap.
+      runCapture('git', ['-C', newRelease, 'update-ref', 'refs/remotes/origin/main', toSha]);
     }
 
     writeStatus('building', { fromSha, toSha, target: shortTo });
