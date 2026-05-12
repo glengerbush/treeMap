@@ -10,7 +10,9 @@
     offlineBundles: [],
     error: null,
     triggered: false,
+    triggeredAt: null,
     finishedPhase: null,
+    checking: false,
     showHelp: false
   });
 
@@ -29,7 +31,15 @@
       state.error = null;
 
       const phase = data.status?.phase;
-      if (state.triggered && !data.running && TERMINAL_PHASES.includes(phase)) {
+      // Only treat a terminal phase as ours if the status file has been
+      // rewritten since we clicked. Otherwise we'd latch onto a previous
+      // run's leftover status during the race between POST returning and
+      // the spawned update.mjs calling writeStatus().
+      const statusFresh =
+        !!data.status?.updatedAt &&
+        !!state.triggeredAt &&
+        data.status.updatedAt > state.triggeredAt;
+      if (state.triggered && !data.running && statusFresh && TERMINAL_PHASES.includes(phase)) {
         state.finishedPhase = phase;
         fastPoll = false;
       }
@@ -52,6 +62,7 @@
 
   async function triggerUpdate() {
     state.triggered = true;
+    state.triggeredAt = new Date().toISOString();
     state.finishedPhase = null;
     fastPoll = true;
     try {
@@ -64,6 +75,25 @@
       state.error = e.message;
     }
     refresh();
+  }
+
+  async function checkForUpdate() {
+    state.checking = true;
+    state.error = null;
+    try {
+      const res = await fetch('/api/update/check', { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      state.current = data.current;
+      state.running = data.running;
+      state.status = data.status;
+      state.offlineBundles = data.offlineBundles || [];
+      if (data.checkError) state.error = data.checkError;
+    } catch (e) {
+      state.error = e.message;
+    } finally {
+      state.checking = false;
+    }
   }
 
   function reload() {
@@ -86,18 +116,27 @@
       const phase = state.status?.phase || 'starting';
       return `Updating: ${phase}`;
     }
-    if (hasOfflineBundle) return 'Offline update ready';
-    if (state.current?.updateAvailable) {
-      const to = state.current.targetVersion || state.current.targetSha?.slice(0, 7) || 'new';
-      return `Update to v${to}`;
-    }
     if (state.current?.version) return `v${state.current.version}`;
     return '';
+  });
+
+  let targetLabel = $derived.by(() => {
+    const v = state.current?.targetVersion || state.current?.targetSha?.slice(0, 7);
+    if (!v) return 'Apply update';
+    return hasOfflineBundle ? `Update to v${v} (offline bundle)` : `Update to v${v}`;
   });
 
   let canUpdate = $derived(
     (hasOfflineBundle || !!state.current?.updateAvailable) &&
     !state.running && !state.triggered
+  );
+
+  let canCheck = $derived(
+    !!state.current &&
+    !canUpdate &&
+    !state.running &&
+    !state.triggered &&
+    !state.finishedPhase
   );
 
   let canReload = $derived(state.finishedPhase === 'done');
@@ -109,6 +148,7 @@
 
   function dismiss() {
     state.triggered = false;
+    state.triggeredAt = null;
     state.finishedPhase = null;
     state.error = null;
   }
@@ -122,7 +162,22 @@
     {:else if canDismiss}
       <button type="button" onclick={dismiss}>Dismiss</button>
     {:else if canUpdate}
-      <button type="button" onclick={triggerUpdate}>Update</button>
+      <button
+        type="button"
+        class="icon-btn"
+        onclick={triggerUpdate}
+        title={targetLabel}
+        aria-label={targetLabel}
+      >↑</button>
+    {:else if canCheck}
+      <button
+        type="button"
+        class="icon-btn"
+        onclick={checkForUpdate}
+        disabled={state.checking}
+        title="Check for updates"
+        aria-label="Check for updates"
+      >↻</button>
     {/if}
     {#if !state.running && !state.triggered}
       <button
@@ -176,6 +231,15 @@
     cursor: pointer;
   }
   .update-badge button:hover { background: #f0f0f0; }
+  .update-badge button.icon-btn {
+    font-weight: bold;
+    padding: 0.15rem 0.45rem;
+    line-height: 1;
+  }
+  .update-badge button.icon-btn:disabled {
+    opacity: 0.5;
+    cursor: progress;
+  }
   .update-badge .error {
     color: #ffb4b4;
     font-weight: bold;
