@@ -1,29 +1,38 @@
 // scripts/snapshot.mjs — Snapshot, restore, and prune the shared data/ dir.
 //
 // Snapshots live at <dataDir>/snapshots/<id>/ where <id> is a sortable
-// timestamp + label. rsync handles the copy/restore so we can exclude
-// snapshots/ from itself and benefit from --delete on restore.
+// timestamp + label. Pure-Node copy via fs.cpSync; no external binaries.
 
-import { existsSync, mkdirSync, readdirSync, statSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-
-import { runCapture } from './_run.mjs';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 
 function timestamp() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 }
 
-// Files that are per-process state, not part of the user data we're
-// snapshotting. Used as rsync excludes for both snapshot and restore so
-// neither operation touches them.
-const RSYNC_EXCLUDES = [
-  '--exclude=snapshots/',
-  '--exclude=update.lock',
-  '--exclude=update-status.json',
-  '--exclude=update.log',
-  '--exclude=server.pid',
-  '--exclude=maintenance.flag'
-];
+// Top-level entries in data/ that are per-process state, not user data.
+// Skipped on both snapshot and restore so neither operation touches them.
+const EXCLUDES = new Set([
+  'snapshots',
+  'update.lock',
+  'update-status.json',
+  'update.log',
+  'server.pid',
+  'maintenance.flag'
+]);
+
+function topLevelName(root, p) {
+  const rel = relative(root, p);
+  if (!rel || rel.startsWith('..')) return null;
+  return rel.split(sep)[0];
+}
+
+function makeFilter(root) {
+  return (src) => {
+    const top = topLevelName(root, src);
+    return top === null || !EXCLUDES.has(top);
+  };
+}
 
 export function snapshotsDir(dataDir) {
   return join(dataDir, 'snapshots');
@@ -35,27 +44,28 @@ export function snapshotData({ dataDir, label }) {
   const id = `${timestamp()}-${safeLabel}`;
   const target = join(snapshotsDir(dataDir), id);
 
-  // rsync trailing slash on source = copy CONTENTS of dataDir.
-  runCapture('rsync', [
-    '-a',
-    ...RSYNC_EXCLUDES,
-    `${dataDir.replace(/\/?$/, '/')}`,
-    `${target}/`
-  ]);
+  cpSync(dataDir, target, {
+    recursive: true,
+    preserveTimestamps: true,
+    filter: makeFilter(dataDir)
+  });
   return target;
 }
 
 export function restoreSnapshot({ dataDir, snapshotPath }) {
   if (!existsSync(snapshotPath)) throw new Error(`snapshot missing: ${snapshotPath}`);
-  // --delete removes files in dataDir that aren't in the snapshot.
-  // --exclude (not --delete-excluded) keeps the snapshots dir intact.
-  runCapture('rsync', [
-    '-a',
-    '--delete',
-    ...RSYNC_EXCLUDES,
-    `${snapshotPath.replace(/\/?$/, '/')}`,
-    `${dataDir.replace(/\/?$/, '/')}`
-  ]);
+
+  // --delete equivalent: wipe non-excluded top-level entries before copying back.
+  for (const name of readdirSync(dataDir)) {
+    if (EXCLUDES.has(name)) continue;
+    rmSync(join(dataDir, name), { recursive: true, force: true });
+  }
+
+  cpSync(snapshotPath, dataDir, {
+    recursive: true,
+    preserveTimestamps: true,
+    filter: makeFilter(snapshotPath)
+  });
 }
 
 export function pruneSnapshots({ dataDir, keep = 3 }) {
